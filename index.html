@@ -115,6 +115,45 @@ const COLS = [{
 const TOTAL_W = COLS.reduce((s, c) => s + c.w, 0);
 const PAGE_OPTS = [25, 50, 100, 250];
 
+/* ── IndexedDB cache ─────────────────────────────────────────────────────── */
+const CACHE_KEYS = ['PARENT_FTS_ID', 'Parent Name', 'FTS_ID', 'STATE', 'INDUSTRY', 'Active Locations', 'AGEINMONTHS', 'LOGINSLAST30DAYS', 'Most Recent Login', 'TRIAL_END', 'TRIALDAYSLEFT', 'RELS_PROCESSING', 'INV_AMT_30'];
+function slimRow(row) {
+  const r = {};
+  CACHE_KEYS.forEach(k => {
+    if (k in row) r[k] = row[k];
+  });
+  return r;
+}
+function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('fintech_crm', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('data');
+    req.onsuccess = e => res(e.target.result);
+    req.onerror = e => rej(e.target.error);
+  });
+}
+async function dbSave(rows, ts) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('data', 'readwrite');
+    tx.objectStore('data').put({
+      rows,
+      ts
+    }, 'cache');
+    tx.oncomplete = res;
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+async function dbLoad() {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('data', 'readonly');
+    const req = tx.objectStore('data').get('cache');
+    req.onsuccess = e => res(e.target.result || null);
+    req.onerror = e => rej(e.target.error);
+  });
+}
+
 /* ── Formatters ──────────────────────────────────────────────────────────── */
 function fmtDate(v) {
   if (v == null || v === "") return "—";
@@ -173,9 +212,22 @@ function App() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(false);
+  const [cacheDate, setCacheDate] = useState(null);
+  const [cacheSize, setCacheSize] = useState(0);
   const [grouped, setGrouped] = useState(false);
   const [collapsed, setCollapsed] = useState(new Set());
   const fileRef = useRef();
+
+  /* Load from IndexedDB on mount */
+  useEffect(() => {
+    dbLoad().then(cached => {
+      if (cached && cached.rows && cached.rows.length) {
+        setRows(cached.rows);
+        setCacheDate(cached.ts);
+        setCacheSize(cached.rows.length);
+      }
+    }).catch(() => {});
+  }, []);
 
   /* File parse */
   function handleFile(e) {
@@ -192,9 +244,14 @@ function App() {
       const data = XLSX.utils.sheet_to_json(ws, {
         defval: ""
       });
-      setRows(data);
+      const slim = data.map(slimRow);
+      setRows(slim);
       setPage(1);
       setLoading(false);
+      const ts = new Date().toISOString();
+      setCacheDate(ts);
+      setCacheSize(slim.length);
+      dbSave(slim, ts).catch(() => {});
     };
     reader.readAsBinaryString(file);
     e.target.value = "";
@@ -404,7 +461,17 @@ function App() {
       color: "#fff",
       fontWeight: 600
     }
-  }, processed.length.toLocaleString()), " accounts", activeFilt > 0 ? ` (filtered from ${rows.length.toLocaleString()})` : "") : "No data loaded"), /*#__PURE__*/React.createElement("div", {
+  }, processed.length.toLocaleString()), " accounts", activeFilt > 0 ? ` (filtered from ${rows.length.toLocaleString()})` : "", cacheDate && /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 10,
+      color: "#8ab4d4",
+      fontSize: 10
+    }
+  }, "· cached ", new Date(cacheDate).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "2-digit"
+  }))) : "No data loaded"), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
